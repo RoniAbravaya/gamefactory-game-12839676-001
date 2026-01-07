@@ -1,83 +1,96 @@
+import 'dart:async';
+import 'package:flame/collisions.dart';
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
-import 'package:flame/collisions.dart';
+import 'package:flame/sprite.dart';
 import 'package:flutter/services.dart';
 
 /// Player component for the mystical platformer game
-/// Handles movement, jumping, animations, and collision detection
-class Player extends SpriteAnimationComponent with HasKeyboardHandlerComponents, CollisionCallbacks, HasGameRef {
-  /// Player movement speed in pixels per second
-  static const double _moveSpeed = 150.0;
+/// Handles jumping, animations, collision detection, and health system
+class Player extends SpriteAnimationComponent
+    with HasKeyboardHandlerComponents, HasCollisionDetection, CollisionCallbacks {
   
-  /// Jump velocity in pixels per second
-  static const double _jumpVelocity = -400.0;
+  /// Player movement speed
+  static const double moveSpeed = 200.0;
   
-  /// Gravity acceleration in pixels per second squared
-  static const double _gravity = 980.0;
+  /// Jump force applied to player
+  static const double jumpForce = -400.0;
+  
+  /// Gravity acceleration
+  static const double gravity = 980.0;
   
   /// Maximum fall speed
-  static const double _maxFallSpeed = 500.0;
-
-  /// Current velocity vector
-  Vector2 velocity = Vector2.zero();
+  static const double maxFallSpeed = 500.0;
   
-  /// Whether the player is currently on the ground
-  bool isOnGround = false;
-  
-  /// Whether the player can jump (prevents double jumping)
-  bool canJump = true;
-  
-  /// Current player health/lives
-  int health = 3;
-  
-  /// Maximum health
+  /// Player health points
   static const int maxHealth = 3;
   
-  /// Whether the player is invulnerable (after taking damage)
+  /// Invulnerability duration after taking damage
+  static const double invulnerabilityDuration = 2.0;
+  
+  /// Current velocity
+  Vector2 velocity = Vector2.zero();
+  
+  /// Whether player is on ground
+  bool isOnGround = false;
+  
+  /// Current health
+  int health = maxHealth;
+  
+  /// Whether player is invulnerable
   bool isInvulnerable = false;
   
-  /// Invulnerability timer
-  double invulnerabilityTimer = 0.0;
+  /// Timer for invulnerability frames
+  Timer? invulnerabilityTimer;
   
-  /// Invulnerability duration in seconds
-  static const double invulnerabilityDuration = 2.0;
-
   /// Animation states
   late SpriteAnimation idleAnimation;
-  late SpriteAnimation runAnimation;
   late SpriteAnimation jumpAnimation;
   late SpriteAnimation fallAnimation;
-
+  late SpriteAnimation hurtAnimation;
+  
   /// Current animation state
   PlayerState currentState = PlayerState.idle;
-
+  
+  /// Callback when player collects a gem
+  Function(int points)? onGemCollected;
+  
+  /// Callback when player takes damage
+  Function(int newHealth)? onHealthChanged;
+  
+  /// Callback when player dies
+  Function()? onPlayerDeath;
+  
   @override
   Future<void> onLoad() async {
-    try {
-      // Load sprite animations
-      await _loadAnimations();
-      
-      // Set initial size and animation
-      size = Vector2(32, 48);
-      animation = idleAnimation;
-      
-      // Add collision hitbox
-      add(RectangleHitbox(
-        size: Vector2(24, 44),
-        position: Vector2(4, 2),
-      ));
-      
-      // Set initial position
-      position = Vector2(100, 300);
-      
-    } catch (e) {
-      print('Error loading player: $e');
-    }
+    await super.onLoad();
+    
+    // Set player size
+    size = Vector2(32, 48);
+    
+    // Add collision detection
+    add(RectangleHitbox());
+    
+    // Load animations
+    await _loadAnimations();
+    
+    // Set initial animation
+    animation = idleAnimation;
+    
+    // Initialize invulnerability timer
+    invulnerabilityTimer = Timer(
+      invulnerabilityDuration,
+      onTick: () {
+        isInvulnerable = false;
+        opacity = 1.0;
+      },
+      repeat: false,
+    );
   }
-
+  
   /// Load all player animations
   Future<void> _loadAnimations() async {
-    final spriteSheet = await gameRef.images.load('player_spritesheet.png');
+    final spriteSheet = await game.images.load('player_spritesheet.png');
     
     idleAnimation = SpriteAnimation.fromFrameData(
       spriteSheet,
@@ -89,24 +102,13 @@ class Player extends SpriteAnimationComponent with HasKeyboardHandlerComponents,
       ),
     );
     
-    runAnimation = SpriteAnimation.fromFrameData(
-      spriteSheet,
-      SpriteAnimationData.sequenced(
-        amount: 6,
-        stepTime: 0.1,
-        textureSize: Vector2(32, 48),
-        texturePosition: Vector2(0, 48),
-      ),
-    );
-    
     jumpAnimation = SpriteAnimation.fromFrameData(
       spriteSheet,
       SpriteAnimationData.sequenced(
-        amount: 3,
+        amount: 2,
         stepTime: 0.1,
         textureSize: Vector2(32, 48),
-        texturePosition: Vector2(0, 96),
-        loop: false,
+        texturePosition: Vector2(0, 48),
       ),
     );
     
@@ -116,72 +118,68 @@ class Player extends SpriteAnimationComponent with HasKeyboardHandlerComponents,
         amount: 2,
         stepTime: 0.15,
         textureSize: Vector2(32, 48),
+        texturePosition: Vector2(0, 96),
+      ),
+    );
+    
+    hurtAnimation = SpriteAnimation.fromFrameData(
+      spriteSheet,
+      SpriteAnimationData.sequenced(
+        amount: 3,
+        stepTime: 0.1,
+        textureSize: Vector2(32, 48),
         texturePosition: Vector2(0, 144),
       ),
     );
   }
-
+  
   @override
   void update(double dt) {
     super.update(dt);
     
     // Update invulnerability timer
-    if (isInvulnerable) {
-      invulnerabilityTimer -= dt;
-      if (invulnerabilityTimer <= 0) {
-        isInvulnerable = false;
-        opacity = 1.0;
-      } else {
-        // Flicker effect during invulnerability
-        opacity = (invulnerabilityTimer * 10).floor() % 2 == 0 ? 0.5 : 1.0;
-      }
-    }
+    invulnerabilityTimer?.update(dt);
     
     // Apply gravity
     if (!isOnGround) {
-      velocity.y += _gravity * dt;
-      velocity.y = velocity.y.clamp(-_jumpVelocity, _maxFallSpeed);
+      velocity.y += gravity * dt;
+      velocity.y = velocity.y.clamp(-jumpForce, maxFallSpeed);
     }
     
-    // Update position based on velocity
+    // Update position
     position += velocity * dt;
     
     // Update animation state
     _updateAnimationState();
     
+    // Handle invulnerability visual effect
+    if (isInvulnerable) {
+      opacity = (opacity == 1.0) ? 0.5 : 1.0;
+    }
+    
     // Reset ground state (will be set by collision detection)
     isOnGround = false;
   }
-
+  
   /// Handle tap input for jumping
-  void handleTap() {
-    jump();
-  }
-
-  /// Make the player jump
   void jump() {
-    if (canJump && isOnGround) {
-      velocity.y = _jumpVelocity;
+    if (isOnGround && health > 0) {
+      velocity.y = jumpForce;
       isOnGround = false;
-      canJump = false;
-      
-      // Play jump sound effect
       _playJumpSound();
     }
   }
-
+  
   /// Update animation based on current state
   void _updateAnimationState() {
     PlayerState newState;
     
-    if (!isOnGround) {
-      if (velocity.y < 0) {
-        newState = PlayerState.jumping;
-      } else {
-        newState = PlayerState.falling;
-      }
-    } else if (velocity.x.abs() > 10) {
-      newState = PlayerState.running;
+    if (health <= 0) {
+      newState = PlayerState.hurt;
+    } else if (velocity.y < 0) {
+      newState = PlayerState.jumping;
+    } else if (velocity.y > 0 && !isOnGround) {
+      newState = PlayerState.falling;
     } else {
       newState = PlayerState.idle;
     }
@@ -191,15 +189,12 @@ class Player extends SpriteAnimationComponent with HasKeyboardHandlerComponents,
       _setAnimation(newState);
     }
   }
-
+  
   /// Set animation based on state
   void _setAnimation(PlayerState state) {
     switch (state) {
       case PlayerState.idle:
         animation = idleAnimation;
-        break;
-      case PlayerState.running:
-        animation = runAnimation;
         break;
       case PlayerState.jumping:
         animation = jumpAnimation;
@@ -207,127 +202,164 @@ class Player extends SpriteAnimationComponent with HasKeyboardHandlerComponents,
       case PlayerState.falling:
         animation = fallAnimation;
         break;
+      case PlayerState.hurt:
+        animation = hurtAnimation;
+        break;
     }
   }
-
-  /// Handle collision with platforms
-  void onPlatformCollision() {
-    if (velocity.y >= 0) {
-      isOnGround = true;
-      canJump = true;
-      velocity.y = 0;
-    }
-  }
-
-  /// Handle collision with gems
-  void onGemCollision() {
-    // Increment score through game reference
-    try {
-      gameRef.add(ScoreUpdateEvent(points: 10));
-    } catch (e) {
-      print('Error updating score: $e');
-    }
-  }
-
-  /// Handle collision with hazards
-  void onHazardCollision() {
-    if (!isInvulnerable) {
-      takeDamage();
-    }
-  }
-
-  /// Take damage and handle health reduction
-  void takeDamage() {
-    if (isInvulnerable) return;
-    
-    health--;
-    isInvulnerable = true;
-    invulnerabilityTimer = invulnerabilityDuration;
-    
-    // Play damage sound effect
-    _playDamageSound();
-    
-    if (health <= 0) {
-      _handleDeath();
-    }
-  }
-
-  /// Handle player death
-  void _handleDeath() {
-    // Trigger game over event
-    gameRef.add(GameOverEvent());
-  }
-
-  /// Heal the player
-  void heal(int amount) {
-    health = (health + amount).clamp(0, maxHealth);
-  }
-
-  /// Reset player to checkpoint or level start
-  void resetToCheckpoint(Vector2 checkpointPosition) {
-    position = checkpointPosition.clone();
-    velocity = Vector2.zero();
-    health = maxHealth;
-    isInvulnerable = false;
-    invulnerabilityTimer = 0.0;
-    opacity = 1.0;
-  }
-
-  /// Play jump sound effect
-  void _playJumpSound() {
-    try {
-      // Implementation depends on audio system
-      // gameRef.audioManager.playSfx('jump.wav');
-    } catch (e) {
-      print('Error playing jump sound: $e');
-    }
-  }
-
-  /// Play damage sound effect
-  void _playDamageSound() {
-    try {
-      // Implementation depends on audio system
-      // gameRef.audioManager.playSfx('damage.wav');
-    } catch (e) {
-      print('Error playing damage sound: $e');
-    }
-  }
-
+  
   @override
-  bool onCollision(Set<Vector2> intersectionPoints, PositionComponent other) {
-    // Handle different collision types
+  bool onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
+    // Handle platform collisions
     if (other is Platform) {
-      onPlatformCollision();
-    } else if (other is Gem) {
-      onGemCollision();
-      other.removeFromParent();
-    } else if (other is Hazard) {
-      onHazardCollision();
+      _handlePlatformCollision(other, intersectionPoints);
+      return true;
+    }
+    
+    // Handle gem collection
+    if (other is Gem && !other.isCollected) {
+      _collectGem(other);
+      return false;
+    }
+    
+    // Handle hazard collisions
+    if (other is Hazard) {
+      _takeDamage();
+      return true;
     }
     
     return true;
+  }
+  
+  /// Handle collision with platforms
+  void _handlePlatformCollision(Platform platform, Set<Vector2> intersectionPoints) {
+    // Check if player is falling onto platform from above
+    if (velocity.y > 0 && position.y < platform.position.y) {
+      velocity.y = 0;
+      position.y = platform.position.y - size.y;
+      isOnGround = true;
+    }
+  }
+  
+  /// Collect a gem and award points
+  void _collectGem(Gem gem) {
+    gem.collect();
+    onGemCollected?.call(gem.points);
+    _playGemSound();
+  }
+  
+  /// Take damage and handle invulnerability
+  void _takeDamage() {
+    if (isInvulnerable || health <= 0) return;
+    
+    health--;
+    isInvulnerable = true;
+    invulnerabilityTimer?.start();
+    
+    // Knockback effect
+    velocity.y = jumpForce * 0.5;
+    
+    onHealthChanged?.call(health);
+    _playHurtSound();
+    
+    if (health <= 0) {
+      _die();
+    }
+  }
+  
+  /// Handle player death
+  void _die() {
+    velocity = Vector2.zero();
+    currentState = PlayerState.hurt;
+    _setAnimation(PlayerState.hurt);
+    onPlayerDeath?.call();
+  }
+  
+  /// Reset player to full health and clear invulnerability
+  void resetHealth() {
+    health = maxHealth;
+    isInvulnerable = false;
+    opacity = 1.0;
+    invulnerabilityTimer?.stop();
+    onHealthChanged?.call(health);
+  }
+  
+  /// Check if player has fallen off the screen
+  bool hasFallenOffScreen() {
+    return position.y > game.size.y + 100;
+  }
+  
+  /// Play jump sound effect
+  void _playJumpSound() {
+    // TODO: Implement sound effect
+    // game.audioManager.playSfx('jump.wav');
+  }
+  
+  /// Play gem collection sound effect
+  void _playGemSound() {
+    // TODO: Implement sound effect
+    // game.audioManager.playSfx('gem_collect.wav');
+  }
+  
+  /// Play hurt sound effect
+  void _playHurtSound() {
+    // TODO: Implement sound effect
+    // game.audioManager.playSfx('hurt.wav');
   }
 }
 
 /// Player animation states
 enum PlayerState {
   idle,
-  running,
   jumping,
   falling,
+  hurt,
 }
 
-/// Score update event
-class ScoreUpdateEvent extends Component {
-  final int points;
+/// Platform component for collision detection
+class Platform extends RectangleComponent with HasCollisionDetection {
+  Platform({required Vector2 position, required Vector2 size})
+      : super(position: position, size: size);
   
-  ScoreUpdateEvent({required this.points});
+  @override
+  Future<void> onLoad() async {
+    await super.onLoad();
+    add(RectangleHitbox());
+  }
 }
 
-/// Game over event
-class GameOverEvent extends Component {}
+/// Gem collectible component
+class Gem extends SpriteComponent with HasCollisionDetection {
+  final int points;
+  bool isCollected = false;
+  
+  Gem({required Vector2 position, this.points = 10})
+      : super(position: position, size: Vector2(24, 24));
+  
+  @override
+  Future<void> onLoad() async {
+    await super.onLoad();
+    add(RectangleHitbox());
+    sprite = await Sprite.load('gem.png');
+  }
+  
+  /// Collect this gem
+  void collect() {
+    if (isCollected) return;
+    isCollected = true;
+    removeFromParent();
+  }
+}
 
-/// Placeholder components for collision detection
-abstract class Platform extends PositionComponent {}
-abstract class Gem extends PositionComponent {}
-abstract class Hazard extends PositionComponent {}
+/// Hazard component that damages the player
+class Hazard extends SpriteComponent with HasCollisionDetection {
+  Hazard({required Vector2 position, required Vector2 size})
+      : super(position: position, size: size);
+  
+  @override
+  Future<void> onLoad() async {
+    await super.onLoad();
+    add(RectangleHitbox());
+    sprite = await Sprite.load('spike.png');
+  }
+}

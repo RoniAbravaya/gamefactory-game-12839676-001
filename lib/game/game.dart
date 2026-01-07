@@ -1,500 +1,515 @@
+import 'dart:async';
+import 'dart:math';
+import 'package:flame/cache.dart';
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
 import 'package:flame/game.dart';
-import 'package:flame/parallax.dart';
+import 'package:flame/geometry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// Main game class for the mystical platformer adventure
-class Batch20260107083440Platformer01Game extends FlameGame
-    with HasTapDetectors, HasCollisionDetection, HasKeyboardHandlerComponents {
-  
-  /// Current game state
-  GameState gameState = GameState.playing;
-  
-  /// Current level number (1-10)
-  int currentLevel = 1;
-  
-  /// Player's current score
-  int score = 0;
-  
-  /// Gems collected in current level
-  int gemsCollected = 0;
-  
-  /// Total gems collected across all levels
-  int totalGems = 0;
-  
-  /// Time remaining in current level (90 seconds)
-  double timeRemaining = 90.0;
-  
-  /// Reference to the player character
-  late PlayerComponent player;
-  
-  /// Camera component for following player
-  late CameraComponent cameraComponent;
-  
-  /// Background parallax component
-  late ParallaxComponent background;
-  
-  /// Level data and components
-  final List<Component> levelComponents = [];
-  
-  /// Checkpoint positions for current level
-  final List<Vector2> checkpoints = [];
-  
-  /// Current active checkpoint index
-  int currentCheckpoint = 0;
-  
-  /// Analytics service integration hook
-  Function(String event, Map<String, dynamic> parameters)? onAnalyticsEvent;
-  
-  /// Ad service integration hook
-  Function(String adType, Function onComplete, Function onFailed)? onShowAd;
-  
-  /// Storage service integration hook
-  Function(String key, dynamic value)? onSaveData;
-  Function(String key, dynamic defaultValue)? onLoadData;
-  
-  @override
-  Future<void> onLoad() async {
-    await super.onLoad();
-    
-    // Initialize camera
-    cameraComponent = CameraComponent.withFixedResolution(
-      width: 400,
-      height: 800,
-    );
-    add(cameraComponent);
-    
-    // Load background
-    await _loadBackground();
-    
-    // Initialize player
-    player = PlayerComponent();
-    add(player);
-    
-    // Load initial level
-    await loadLevel(currentLevel);
-    
-    // Track game start
-    _trackEvent('game_start', {
-      'level': currentLevel,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-    });
-  }
-  
-  @override
-  void update(double dt) {
-    super.update(dt);
-    
-    if (gameState == GameState.playing) {
-      // Update timer
-      timeRemaining -= dt;
-      
-      // Check for time up
-      if (timeRemaining <= 0) {
-        _handleGameOver('time_up');
-      }
-      
-      // Update camera to follow player
-      cameraComponent.viewfinder.visibleGameSize = size;
-      cameraComponent.viewfinder.position = Vector2(
-        player.position.x,
-        player.position.y - 200,
-      );
-    }
-  }
-  
-  @override
-  bool onTapDown(TapDownInfo info) {
-    if (gameState == GameState.playing) {
-      player.jump();
-      return true;
-    }
-    return false;
-  }
-  
-  /// Load a specific level
-  Future<void> loadLevel(int levelNumber) async {
-    try {
-      // Clear existing level components
-      for (final component in levelComponents) {
-        component.removeFromParent();
-      }
-      levelComponents.clear();
-      checkpoints.clear();
-      
-      // Reset level state
-      currentLevel = levelNumber;
-      gemsCollected = 0;
-      timeRemaining = 90.0;
-      currentCheckpoint = 0;
-      gameState = GameState.playing;
-      
-      // Track level start
-      _trackEvent('level_start', {
-        'level': levelNumber,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      });
-      
-      // Load level-specific components based on difficulty
-      await _generateLevelComponents(levelNumber);
-      
-      // Position player at start
-      player.position = Vector2(50, 600);
-      player.resetState();
-      
-    } catch (e) {
-      debugPrint('Error loading level $levelNumber: $e');
-    }
-  }
-  
-  /// Generate level components based on level number and difficulty
-  Future<void> _generateLevelComponents(int levelNumber) async {
-    // Calculate difficulty scaling
-    final difficultyScale = (levelNumber - 1) / 9.0; // 0.0 to 1.0
-    
-    // Platform gap distance increases with level
-    final baseGap = 80.0 + (difficultyScale * 40.0);
-    
-    // Number of platforms decreases with level (fewer checkpoints)
-    final platformCount = 15 - (difficultyScale * 5).round();
-    
-    // Generate platforms
-    for (int i = 0; i < platformCount; i++) {
-      final x = 100.0 + (i * (baseGap + 50));
-      final y = 400.0 + (i % 3) * 100.0; // Varying heights
-      
-      final platform = PlatformComponent(
-        position: Vector2(x, y),
-        isMoving: levelNumber > 2 && i % 4 == 0, // Moving platforms in later levels
-        moveSpeed: 50.0 + (difficultyScale * 30.0),
-      );
-      
-      add(platform);
-      levelComponents.add(platform);
-      
-      // Add checkpoint every 3 platforms
-      if (i % 3 == 0) {
-        checkpoints.add(Vector2(x, y - 50));
-      }
-    }
-    
-    // Generate gems
-    final gemCount = 8 + (difficultyScale * 4).round();
-    for (int i = 0; i < gemCount; i++) {
-      final x = 150.0 + (i * 120.0);
-      final y = 300.0 + (i % 2) * 80.0;
-      
-      final gem = GemComponent(position: Vector2(x, y));
-      add(gem);
-      levelComponents.add(gem);
-    }
-    
-    // Generate hazards (spikes) for higher levels
-    if (levelNumber > 3) {
-      final spikeCount = ((levelNumber - 3) * 2).clamp(0, 8);
-      for (int i = 0; i < spikeCount; i++) {
-        final x = 200.0 + (i * 150.0);
-        final y = 500.0;
-        
-        final spike = SpikeComponent(position: Vector2(x, y));
-        add(spike);
-        levelComponents.add(spike);
-      }
-    }
-    
-    // Add exit portal at the end
-    final exitPortal = ExitPortalComponent(
-      position: Vector2(100.0 + (platformCount * (baseGap + 50)), 300.0),
-    );
-    add(exitPortal);
-    levelComponents.add(exitPortal);
-  }
-  
-  /// Load mystical fantasy background
-  Future<void> _loadBackground() async {
-    background = await loadParallaxComponent([
-      ParallaxImageData('backgrounds/starry_sky.png'),
-      ParallaxImageData('backgrounds/floating_islands.png'),
-    ]);
-    add(background);
-  }
-  
-  /// Handle gem collection
-  void collectGem(int value) {
-    gemsCollected++;
-    totalGems++;
-    score += value;
-    
-    _trackEvent('gem_collected', {
-      'level': currentLevel,
-      'gems_in_level': gemsCollected,
-      'total_gems': totalGems,
-      'score': score,
-    });
-  }
-  
-  /// Handle reaching checkpoint
-  void reachCheckpoint(int checkpointIndex) {
-    if (checkpointIndex > currentCheckpoint) {
-      currentCheckpoint = checkpointIndex;
-      
-      _trackEvent('checkpoint_reached', {
-        'level': currentLevel,
-        'checkpoint': checkpointIndex,
-      });
-    }
-  }
-  
-  /// Handle level completion
-  void completeLevel() {
-    gameState = GameState.levelComplete;
-    
-    // Award completion bonus
-    final completionBonus = 15 + (gemsCollected * 5);
-    score += completionBonus;
-    totalGems += 15; // Base gems per level
-    
-    _trackEvent('level_complete', {
-      'level': currentLevel,
-      'score': score,
-      'gems_collected': gemsCollected,
-      'time_remaining': timeRemaining,
-      'completion_bonus': completionBonus,
-    });
-    
-    // Save progress
-    _saveGameData();
-    
-    // Show level complete overlay
-    overlays.add('LevelCompleteOverlay');
-  }
-  
-  /// Handle game over scenarios
-  void _handleGameOver(String reason) {
-    gameState = GameState.gameOver;
-    
-    _trackEvent('level_fail', {
-      'level': currentLevel,
-      'reason': reason,
-      'score': score,
-      'gems_collected': gemsCollected,
-      'time_remaining': timeRemaining,
-    });
-    
-    // Show game over overlay
-    overlays.add('GameOverOverlay');
-  }
-  
-  /// Restart from current checkpoint
-  void restartFromCheckpoint() {
-    if (currentCheckpoint < checkpoints.length) {
-      player.position = checkpoints[currentCheckpoint].clone();
-      player.resetState();
-      gameState = GameState.playing;
-      overlays.remove('GameOverOverlay');
-    } else {
-      restartLevel();
-    }
-  }
-  
-  /// Restart current level
-  void restartLevel() {
-    loadLevel(currentLevel);
-    overlays.remove('GameOverOverlay');
-  }
-  
-  /// Proceed to next level
-  void nextLevel() {
-    overlays.remove('LevelCompleteOverlay');
-    
-    if (currentLevel < 10) {
-      // Check if next level is unlocked
-      if (currentLevel >= 3 && !_isLevelUnlocked(currentLevel + 1)) {
-        _showUnlockPrompt(currentLevel + 1);
-      } else {
-        loadLevel(currentLevel + 1);
-      }
-    } else {
-      // Game completed
-      _trackEvent('game_complete', {
-        'final_score': score,
-        'total_gems': totalGems,
-      });
-      overlays.add('GameCompleteOverlay');
-    }
-  }
-  
-  /// Check if a level is unlocked
-  bool _isLevelUnlocked(int levelNumber) {
-    if (levelNumber <= 3) return true;
-    
-    // Load from storage or return false
-    final unlockedLevels = onLoadData?.call('unlocked_levels', <int>[1, 2, 3]) ?? [1, 2, 3];
-    return unlockedLevels.contains(levelNumber);
-  }
-  
-  /// Show unlock prompt for locked levels
-  void _showUnlockPrompt(int levelNumber) {
-    _trackEvent('unlock_prompt_shown', {
-      'level': levelNumber,
-    });
-    
-    overlays.add('UnlockPromptOverlay');
-  }
-  
-  /// Unlock level via rewarded ad
-  void unlockLevelWithAd(int levelNumber) {
-    _trackEvent('rewarded_ad_started', {
-      'level': levelNumber,
-      'purpose': 'unlock_level',
-    });
-    
-    onShowAd?.call('rewarded', () {
-      // Ad completed successfully
-      _trackEvent('rewarded_ad_completed', {
-        'level': levelNumber,
-        'purpose': 'unlock_level',
-      });
-      
-      final unlockedLevels = onLoadData?.call('unlocked_levels', <int>[1, 2, 3]) ?? [1, 2, 3];
-      if (!unlockedLevels.contains(levelNumber)) {
-        unlockedLevels.add(levelNumber);
-        onSaveData?.call('unlocked_levels', unlockedLevels);
-      }
-      
-      _trackEvent('level_unlocked', {
-        'level': levelNumber,
-        'method': 'rewarded_ad',
-      });
-      
-      overlays.remove('UnlockPromptOverlay');
-      loadLevel(levelNumber);
-    }, () {
-      // Ad failed
-      _trackEvent('rewarded_ad_failed', {
-        'level': levelNumber,
-        'purpose': 'unlock_level',
-      });
-    });
-  }
-  
-  /// Save game data
-  void _saveGameData() {
-    onSaveData?.call('total_gems', totalGems);
-    onSaveData?.call('highest_level', currentLevel);
-    onSaveData?.call('total_score', score);
-  }
-  
-  /// Track analytics event
-  void _trackEvent(String event, Map<String, dynamic> parameters) {
-    onAnalyticsEvent?.call(event, parameters);
-  }
-  
-  /// Pause the game
-  void pauseGame() {
-    gameState = GameState.paused;
-    overlays.add('PauseOverlay');
-  }
-  
-  /// Resume the game
-  void resumeGame() {
-    gameState = GameState.playing;
-    overlays.remove('PauseOverlay');
-  }
-}
+import '../components/player.dart';
+import '../components/platform.dart';
+import '../components/gem.dart';
+import '../components/checkpoint.dart';
+import '../components/spike.dart';
+import '../components/moving_platform.dart';
+import '../components/exit_portal.dart';
+import '../components/background.dart';
+import '../components/particle_system.dart';
+import '../controllers/game_controller.dart';
+import '../services/analytics_service.dart';
+import '../models/level_config.dart';
+import '../utils/constants.dart';
 
-/// Game state enumeration
+/// Game states for the platformer
 enum GameState {
   playing,
   paused,
   gameOver,
   levelComplete,
+  loading
 }
 
-/// Player character component
-class PlayerComponent extends SpriteAnimationComponent with HasCollisionDetection {
-  late Vector2 velocity;
-  bool isOnGround = false;
-  bool isJumping = false;
+/// Main FlameGame class for the mystical platformer game
+class Batch20260107083440Platformer01Game extends FlameGame
+    with HasKeyboardHandlerComponents, HasCollisionDetection, HasTappables {
   
+  /// Current game state
+  GameState _gameState = GameState.loading;
+  GameState get gameState => _gameState;
+
+  /// Game controller reference
+  late GameController gameController;
+
+  /// Analytics service reference
+  late AnalyticsService analyticsService;
+
+  /// Current level configuration
+  LevelConfig? _currentLevel;
+
+  /// Player component
+  late Player player;
+
+  /// Game world components
+  final List<Platform> platforms = [];
+  final List<Gem> gems = [];
+  final List<Checkpoint> checkpoints = [];
+  final List<Spike> spikes = [];
+  final List<MovingPlatform> movingPlatforms = [];
+  ExitPortal? exitPortal;
+  Background? background;
+  ParticleSystem? particleSystem;
+
+  /// Game metrics
+  int _score = 0;
+  int _lives = 3;
+  int _gemsCollected = 0;
+  int _totalGems = 0;
+  double _levelTime = 0.0;
+  double _maxLevelTime = 90.0;
+  Vector2? _lastCheckpoint;
+
+  /// Camera and world setup
+  late CameraComponent cameraComponent;
+  late World gameWorld;
+
+  /// Getters for game state
+  int get score => _score;
+  int get lives => _lives;
+  int get gemsCollected => _gemsCollected;
+  int get totalGems => _totalGems;
+  double get levelTime => _levelTime;
+  double get maxLevelTime => _maxLevelTime;
+  Vector2? get lastCheckpoint => _lastCheckpoint;
+
   @override
   Future<void> onLoad() async {
-    await super.onLoad();
-    
-    // Load player sprite animation
-    animation = await game.loadSpriteAnimation(
-      'characters/player.png',
-      SpriteAnimationData.sequenced(
-        amount: 4,
-        stepTime: 0.2,
-        textureSize: Vector2(32, 32),
-      ),
-    );
-    
-    size = Vector2(32, 32);
-    velocity = Vector2.zero();
-    
-    // Add collision detection
-    add(RectangleHitbox());
+    try {
+      // Initialize world and camera
+      gameWorld = World();
+      cameraComponent = CameraComponent(world: gameWorld);
+      
+      addAll([cameraComponent, gameWorld]);
+
+      // Set up camera viewport
+      cameraComponent.viewfinder.visibleGameSize = size;
+      cameraComponent.viewfinder.anchor = Anchor.topLeft;
+
+      // Initialize collision detection
+      add(HasCollisionDetection.initializeCollisionDetection());
+
+      // Load initial assets
+      await _loadAssets();
+
+      // Set initial state
+      _gameState = GameState.playing;
+
+      debugPrint('Batch-20260107-083440-platformer-01 Game initialized');
+    } catch (e) {
+      debugPrint('Error initializing game: $e');
+      _gameState = GameState.gameOver;
+    }
   }
-  
+
+  /// Load game assets
+  Future<void> _loadAssets() async {
+    // Preload sprite images
+    await images.loadAll([
+      'player_idle.png',
+      'player_jump.png',
+      'player_fall.png',
+      'platform.png',
+      'gem.png',
+      'checkpoint.png',
+      'spike.png',
+      'moving_platform.png',
+      'exit_portal.png',
+      'background.png',
+    ]);
+  }
+
+  /// Load a specific level
+  Future<void> loadLevel(LevelConfig levelConfig) async {
+    try {
+      _gameState = GameState.loading;
+      _currentLevel = levelConfig;
+
+      // Clear existing level components
+      await _clearLevel();
+
+      // Reset game metrics
+      _resetLevelMetrics();
+
+      // Create background
+      background = Background(levelConfig.backgroundStyle);
+      gameWorld.add(background!);
+
+      // Create particle system
+      particleSystem = ParticleSystem();
+      gameWorld.add(particleSystem!);
+
+      // Create player
+      player = Player(
+        position: Vector2(levelConfig.playerStartX, levelConfig.playerStartY),
+        game: this,
+      );
+      gameWorld.add(player);
+
+      // Create platforms
+      for (final platformData in levelConfig.platforms) {
+        final platform = Platform(
+          position: Vector2(platformData.x, platformData.y),
+          size: Vector2(platformData.width, platformData.height),
+        );
+        platforms.add(platform);
+        gameWorld.add(platform);
+      }
+
+      // Create moving platforms
+      for (final movingPlatformData in levelConfig.movingPlatforms) {
+        final movingPlatform = MovingPlatform(
+          startPosition: Vector2(movingPlatformData.startX, movingPlatformData.startY),
+          endPosition: Vector2(movingPlatformData.endX, movingPlatformData.endY),
+          size: Vector2(movingPlatformData.width, movingPlatformData.height),
+          speed: movingPlatformData.speed,
+        );
+        movingPlatforms.add(movingPlatform);
+        gameWorld.add(movingPlatform);
+      }
+
+      // Create gems
+      for (final gemData in levelConfig.gems) {
+        final gem = Gem(
+          position: Vector2(gemData.x, gemData.y),
+          value: gemData.value,
+        );
+        gems.add(gem);
+        gameWorld.add(gem);
+      }
+      _totalGems = gems.length;
+
+      // Create checkpoints
+      for (final checkpointData in levelConfig.checkpoints) {
+        final checkpoint = Checkpoint(
+          position: Vector2(checkpointData.x, checkpointData.y),
+        );
+        checkpoints.add(checkpoint);
+        gameWorld.add(checkpoint);
+      }
+
+      // Create spikes
+      for (final spikeData in levelConfig.spikes) {
+        final spike = Spike(
+          position: Vector2(spikeData.x, spikeData.y),
+          size: Vector2(spikeData.width, spikeData.height),
+        );
+        spikes.add(spike);
+        gameWorld.add(spike);
+      }
+
+      // Create exit portal
+      exitPortal = ExitPortal(
+        position: Vector2(levelConfig.exitX, levelConfig.exitY),
+      );
+      gameWorld.add(exitPortal!);
+
+      // Set level time limit
+      _maxLevelTime = levelConfig.timeLimit;
+
+      // Set up camera to follow player
+      cameraComponent.follow(player);
+
+      _gameState = GameState.playing;
+
+      // Log level start
+      analyticsService.logEvent('level_start', {
+        'level_number': levelConfig.levelNumber,
+        'level_name': levelConfig.name,
+      });
+
+    } catch (e) {
+      debugPrint('Error loading level: $e');
+      _gameState = GameState.gameOver;
+    }
+  }
+
+  /// Clear current level components
+  Future<void> _clearLevel() async {
+    // Remove all level components
+    for (final platform in platforms) {
+      platform.removeFromParent();
+    }
+    platforms.clear();
+
+    for (final gem in gems) {
+      gem.removeFromParent();
+    }
+    gems.clear();
+
+    for (final checkpoint in checkpoints) {
+      checkpoint.removeFromParent();
+    }
+    checkpoints.clear();
+
+    for (final spike in spikes) {
+      spike.removeFromParent();
+    }
+    spikes.clear();
+
+    for (final movingPlatform in movingPlatforms) {
+      movingPlatform.removeFromParent();
+    }
+    movingPlatforms.clear();
+
+    exitPortal?.removeFromParent();
+    exitPortal = null;
+
+    background?.removeFromParent();
+    background = null;
+
+    particleSystem?.removeFromParent();
+    particleSystem = null;
+
+    if (gameWorld.children.contains(player)) {
+      player.removeFromParent();
+    }
+  }
+
+  /// Reset level metrics
+  void _resetLevelMetrics() {
+    _score = 0;
+    _gemsCollected = 0;
+    _totalGems = 0;
+    _levelTime = 0.0;
+    _lastCheckpoint = null;
+  }
+
   @override
   void update(double dt) {
     super.update(dt);
-    
-    // Apply gravity
-    if (!isOnGround) {
-      velocity.y += 800 * dt; // Gravity
-    }
-    
-    // Update position
-    position += velocity * dt;
-    
-    // Check for falling off screen
-    if (position.y > 1000) {
-      (game as Batch20260107083440Platformer01Game)._handleGameOver('fell_off_screen');
-    }
-  }
-  
-  /// Make the player jump
-  void jump() {
-    if (isOnGround) {
-      velocity.y = -400; // Jump velocity
-      isOnGround = false;
-      isJumping = true;
-    }
-  }
-  
-  /// Reset player state
-  void resetState() {
-    velocity = Vector2.zero();
-    isOnGround = false;
-    isJumping = false;
-  }
-}
 
-/// Platform component
-class PlatformComponent extends RectangleComponent with HasCollisionDetection {
-  final bool isMoving;
-  final double moveSpeed;
-  late Vector2 moveDirection;
-  late Vector2 startPosition;
-  
-  PlatformComponent({
-    required Vector2 position,
-    this.isMoving = false,
-    this.moveSpeed = 50.0,
-  }) : super(
-    position: position,
-    size: Vector2(100, 20),
-    paint: Paint()..color = const Color(0xFF7B68EE),
-  );
-  
+    if (_gameState == GameState.playing) {
+      // Update level time
+      _levelTime += dt;
+
+      // Check time limit
+      if (_levelTime >= _maxLevelTime) {
+        _handleTimeUp();
+      }
+
+      // Update camera bounds
+      _updateCamera();
+
+      // Check win condition
+      if (_gemsCollected >= _totalGems && exitPortal != null) {
+        exitPortal!.activate();
+      }
+    }
+  }
+
+  /// Update camera to follow player with bounds
+  void _updateCamera() {
+    if (_currentLevel != null) {
+      final viewport = cameraComponent.viewfinder;
+      final playerPos = player.position;
+
+      // Calculate camera bounds
+      final leftBound = viewport.visibleGameSize.x / 2;
+      final rightBound = _currentLevel!.width - viewport.visibleGameSize.x / 2;
+      final topBound = viewport.visibleGameSize.y / 2;
+      final bottomBound = _currentLevel!.height - viewport.visibleGameSize.y / 2;
+
+      // Clamp camera position
+      final targetX = playerPos.x.clamp(leftBound, rightBound);
+      final targetY = playerPos.y.clamp(topBound, bottomBound);
+
+      viewport.position = Vector2(targetX, targetY);
+    }
+  }
+
+  /// Handle tap input for jumping
   @override
-  Future<void> onLoad() async {
-    await super.onLoad();
+  bool onTapDown(TapDownInfo info) {
+    if (_gameState == GameState.playing) {
+      player.jump();
+      return true;
+    }
+    return false;
+  }
+
+  /// Collect a gem
+  void collectGem(Gem gem) {
+    if (gems.contains(gem)) {
+      _gemsCollected++;
+      _score += gem.value;
+      gems.remove(gem);
+      gem.removeFromParent();
+
+      // Add particle effect
+      particleSystem?.addGemCollectionEffect(gem.position);
+
+      // Play sound effect
+      // AudioManager.instance.playSfx('gem_collect');
+
+      // Update UI
+      gameController.updateScore(_score);
+      gameController.updateGemsCollected(_gemsCollected, _totalGems);
+
+      // Log gem collection
+      analyticsService.logEvent('gem_collected', {
+        'gem_value': gem.value,
+        'total_gems_collected': _gemsCollected,
+        'level_number': _currentLevel?.levelNumber ?? 0,
+      });
+    }
+  }
+
+  /// Activate a checkpoint
+  void activateCheckpoint(Checkpoint checkpoint) {
+    _lastCheckpoint = checkpoint.position.clone();
+    checkpoint.activate();
+
+    // Add particle effect
+    particleSystem?.addCheckpointEffect(checkpoint.position);
+
+    // Log checkpoint activation
+    analyticsService.logEvent('checkpoint_activated', {
+      'checkpoint_x': checkpoint.position.x,
+      'checkpoint_y': checkpoint.position.y,
+      'level_number': _currentLevel?.levelNumber ?? 0,
+    });
+  }
+
+  /// Handle player death
+  void handlePlayerDeath() {
+    if (_gameState != GameState.playing) return;
+
+    _lives--;
     
-    startPosition = position.clone();
-    moveDirection = Vector2(1, 0);
+    // Add death particle effect
+    particleSystem?.addDeathEffect(player.position);
+
+    if (_lives <= 0) {
+      _handleGameOver();
+    } else {
+      _respawnPlayer();
+    }
+
+    // Log player death
+    analyticsService.logEvent('player_death', {
+      'lives_remaining': _lives,
+      'death_position_x': player.position.x,
+      'death_position_y': player.position.y,
+      'level_number': _currentLevel?.levelNumber ?? 0,
+    });
+  }
+
+  /// Respawn player at last checkpoint or start
+  void _respawnPlayer() {
+    final respawnPosition = _lastCheckpoint ?? 
+        Vector2(_currentLevel?.playerStartX ?? 100, _currentLevel?.playerStartY ?? 100);
+    
+    player.respawn(respawnPosition);
+    gameController.updateLives(_lives);
+  }
+
+  /// Handle level completion
+  void handleLevelComplete() {
+    if (_gameState != GameState.playing) return;
+
+    _gameState = GameState.levelComplete;
+
+    // Calculate final score with time bonus
+    final timeBonus = max(0, (_maxLevelTime - _levelTime) * 10).round();
+    _score += timeBonus;
+
+    // Add completion particle effect
+    particleSystem?.addLevelCompleteEffect(exitPortal!.position);
+
+    // Update UI
+    gameController.updateScore(_score);
+    overlays.add('LevelCompleteOverlay');
+
+    // Log level completion
+    analyticsService.logEvent('level_complete', {
+      'level_number': _currentLevel?.levelNumber ?? 0,
+      'completion_time': _levelTime,
+      'final_score': _score,
+      'gems_collected': _gemsCollected,
+      'time_bonus': timeBonus,
+    });
+  }
+
+  /// Handle game over
+  void _handleGameOver() {
+    _gameState = GameState.gameOver;
+    overlays.add('GameOverOverlay');
+
+    // Log game over
+    analyticsService.logEvent('level_fail', {
+      'level_number': _currentLevel?.levelNumber ?? 0,
+      'survival_time': _levelTime,
+      'final_score': _score,
+      'gems_collected': _gemsCollected,
+      'death_cause': 'no_lives_remaining',
+    });
+  }
+
+  /// Handle time up
+  void _handleTimeUp() {
+    _gameState = GameState.gameOver;
+    overlays.add('GameOverOverlay');
+
+    // Log time up
+    analyticsService.logEvent('level_fail', {
+      'level_number': _currentLevel?.levelNumber ?? 0,
+      'final_score': _score,
+      'gems_collected': _gemsCollected,
+      'death_cause': 'time_up',
+    });
+  }
+
+  /// Pause the game
+  void pauseGame() {
+    if (_gameState == GameState.playing) {
+      _gameState = GameState.paused;
+      overlays.add('PauseOverlay');
+    }
+  }
+
+  /// Resume the game
+  void resumeGame() {
+    if (_gameState == GameState.paused) {
+      _gameState = GameState.playing;
+      overlays.remove('PauseOverlay');
+    }
+  }
+
+  /// Restart current level
+  void restartLevel() {
+    if (_currentLevel != null) {
+      overlays.remove('GameOverOverlay');
+      overlays.remove('PauseOverlay');
+      _lives = 3;
+      loadLevel(_currentLevel!);
+    }
+  }
+
+  /// Go to next level
+  void nextLevel() {
+    overlays.remove('LevelCompleteOverlay');
+    gameController.loadNextLevel();
+  }
+
+  /// Return to main menu
+  void returnToMenu() {
+    overlays.remove('GameOverOverlay');
+    overlays.remove('PauseOverlay');
+    overlays.remove('LevelCompleteOverlay');
+    gameController.returnToMenu();
+  }
+
+  @override
+  void onRemove() {
+    // Clean
